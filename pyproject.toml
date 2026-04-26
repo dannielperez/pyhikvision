@@ -1,0 +1,75 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pyhikvision"
+version = "0.1.0"
+description = "Pure-Python Hikvision ISAPI client + optional HCNetSDK bindings, for IP/network management and beyond"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [
+    { name = "Danniel Perez", email = "dannielperez@users.noreply.github.com" },
+]
+keywords = ["hikvision", "isapi", "hcnetsdk", "camera", "ipc", "nvr", "network", "cctv", "surveillance"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Networking",
+    "Topic :: System :: Systems Administration",
+]
+dependencies = [
+    "requests>=2.31",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.4",
+    "build>=1.0",
+    "twine>=5.0",
+]
+
+[project.scripts]
+pyhik = "pyhikvision.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/dannielperez/pyhikvision"
+Repository = "https://github.com/dannielperez/pyhikvision"
+Issues = "https://github.com/dannielperez/pyhikvision/issues"
+
+[tool.hatch.build]
+exclude = [
+    "**/*.so",
+    "**/*.so.*",
+    "**/*.dll",
+    "**/*.dylib",
+    "**/*.lib",
+    "**/*.a",
+    "**/*.h",
+    "binaries/**",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pyhikvision"]
+
+[tool.hatch.build.targets.sdist]
+exclude = [
+    "/.github",
+    "/.editorconfig",
+    "/.gitignore",
+    "/.venv",
+    "/dist",
+    "/build",
+    "binaries/",
+    "**/__pycache__",
+]

@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.so
+*.dylib
+*.dll
+binaries/linux/x86_64/
+binaries/linux/arm64/
+.coverage
+htmlcov/
