@@ -24,9 +24,9 @@ with HikClient("192.168.1.64", "admin", "MyPass!") as cam:
     print(info.device_name, info.serial_number, info.firmware_version)
 
     cam.set_network_config(
-        ip="10.40.24.101",
+        ip="10.0.0.10",
         mask="255.255.255.0",
-        gateway="10.40.24.1",
+        gateway="10.0.0.1",
         dns1="8.8.8.8",
     )
     cam.reboot()
@@ -38,10 +38,10 @@ with HikClient("192.168.1.64", "admin", "MyPass!") as cam:
 from pyhikvision import batch_set_ip
 
 results = batch_set_ip(
-    pairs=[{"old_ip": "192.168.110.101", "new_ip": "10.40.24.101"}, ...],
+    pairs=[{"old_ip": "192.168.1.64", "new_ip": "10.0.0.10"}, ...],
     user="admin",
     password="MyPass!",
-    gateway="10.40.24.1",
+    gateway="10.0.0.1",
     mask="255.255.255.0",
     workers=8,
     verify=True,
