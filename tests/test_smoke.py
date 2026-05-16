@@ -29,9 +29,9 @@ def test_xml_helpers_namespace_strip():
     root = parse(xml)
     assert find_local_text(root, "ipAddress") == "192.168.1.64"
     assert find_local_text(root, "subnetMask") == "255.255.255.0"
-    assert set_local_text(root, "ipAddress", "10.40.24.101")
+    assert set_local_text(root, "ipAddress", "10.0.0.10")
     out = to_xml(root)
-    assert "10.40.24.101" in out
+    assert "10.0.0.10" in out
     assert "ns0:" not in out
 
 
