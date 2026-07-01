@@ -1,6 +1,6 @@
 """Parallel batch IP-change helper.
 
-Mirrors the pattern used by the TVT SDK daemon:
+Two-phase batch strategy:
 - Phase 1: serial submit (login -> set -> reboot) to avoid hammering one
   device with overlapping config writes.
 - Phase 2: parallel verification (TCP probe) of new vs old IP.
