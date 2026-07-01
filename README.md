@@ -12,7 +12,7 @@ The high-level `HikClient` defaults to **ISAPI** (no native deps). The
 
 This is the merged successor to public projects like `Rennbon/pyhikvision`,
 `kamokr/pyhikvision`, and various ISAPI-only clients — forked, cleaned up,
-and adapted to mirror the layout of our internal `pytvt` package.
+and modernized.
 
 ## Quick start (ISAPI — no SDK needed)
 
@@ -56,8 +56,7 @@ HCNetSDK Linux bundle into `binaries/linux/{x86_64,arm64}/` (or set
 
 ## Architectural notes
 
-- **macOS Rosetta hangs on `NET_DVR_Init`** — same class of issue as TVT's
-  `NET_CLIENT_Initial`. Use ISAPI on macOS, or run NetSDK inside a Linux
-  Docker container (mirrors our pytvt approach).
+- **macOS Rosetta hangs on `NET_DVR_Init`.** Use ISAPI on macOS, or run
+  NetSDK inside a Linux Docker container.
 - **SADP multicast doesn't traverse WireGuard.** ISAPI is the only path for
   remote-site IP migrations.
