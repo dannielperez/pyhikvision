@@ -4,13 +4,13 @@ Public API:
     HikClient        — high-level facade (defaults to ISAPI)
     IsapiClient      — pure-Python ISAPI client (low-level)
     batch_set_ip     — parallel IP-change helper for migrations
-    DeviceInfo, NetworkConfig — dataclasses
+    DeviceInfo, NetworkConfig, LineDetectionConfig — dataclasses
     HikError, HikAuthError, HikHTTPError, HikXMLError, HikUnreachableError
 """
 
 from .client import HikClient
 from .isapi import IsapiClient, batch_set_ip
-from .models import DeviceInfo, NetworkConfig
+from .models import DeviceInfo, LineDetectionConfig, NetworkConfig
 from .exceptions import (
     HikError,
     HikAuthError,
@@ -27,6 +27,7 @@ __all__ = [
     "batch_set_ip",
     "DeviceInfo",
     "NetworkConfig",
+    "LineDetectionConfig",
     "HikError",
     "HikAuthError",
     "HikHTTPError",
