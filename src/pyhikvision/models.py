@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass
 from typing import Optional
 
 
@@ -34,6 +34,30 @@ class NetworkConfig:
     dhcp: Optional[bool] = None
     mac_address: Optional[str] = None
     mtu: Optional[int] = None
+    raw_xml: Optional[str] = None
+
+    def to_dict(self) -> dict:
+        d = asdict(self)
+        d.pop("raw_xml", None)
+        return d
+
+
+@dataclass
+class LineDetectionConfig:
+    """One ISAPI line-crossing rule and its normalized image geometry."""
+
+    channel_id: int
+    line_id: int
+    enabled: bool
+    global_enabled: bool
+    item_enabled: bool
+    multi_scene_supported: bool
+    sensitivity: int
+    direction: str
+    start: tuple[int, int]
+    end: tuple[int, int]
+    screen_width: int = 1000
+    screen_height: int = 1000
     raw_xml: Optional[str] = None
 
     def to_dict(self) -> dict:

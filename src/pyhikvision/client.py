@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Optional
 
 from .isapi.client import IsapiClient
-from .models import DeviceInfo, NetworkConfig
+from .models import DeviceInfo, LineDetectionConfig, NetworkConfig
 
 
 class HikClient:
@@ -80,6 +80,12 @@ class HikClient:
 
     def set_network_config(self, **kwargs) -> None:
         return self._impl.set_network_config(**kwargs)
+
+    def get_line_detection(self, **kwargs) -> LineDetectionConfig:
+        return self._impl.get_line_detection(**kwargs)
+
+    def set_line_detection(self, **kwargs) -> LineDetectionConfig:
+        return self._impl.set_line_detection(**kwargs)
 
     def reboot(self) -> None:
         return self._impl.reboot()

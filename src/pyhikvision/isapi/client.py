@@ -17,7 +17,7 @@ Reference: Hikvision ISAPI 2.x specification (publicly distributed under
 from __future__ import annotations
 
 import logging
-import time
+import xml.etree.ElementTree as ET
 from typing import Optional
 
 import requests
@@ -27,15 +27,14 @@ from requests.exceptions import (
     Timeout as RequestsTimeout,
 )
 
-from .._xml import find_local_text, parse, set_local_text, to_xml
+from .._xml import find_local_text, localname, parse, set_local_text, to_xml
 from ..exceptions import (
     HikAuthError,
-    HikError,
     HikHTTPError,
     HikUnreachableError,
     HikXMLError,
 )
-from ..models import DeviceInfo, NetworkConfig
+from ..models import DeviceInfo, LineDetectionConfig, NetworkConfig
 
 logger = logging.getLogger(__name__)
 
@@ -222,12 +221,142 @@ class IsapiClient:
         if dns2 is not None:
             _set_dns(root, 2, dns2)
         if dhcp is not None:
-            set_local_text(
-                root, "addressingType", "dynamic" if dhcp else "static"
-            )
+            set_local_text(root, "addressingType", "dynamic" if dhcp else "static")
 
         body = to_xml(root)
         self._request("PUT", path, data=body)
+
+    # ---- smart events ----
+    def get_line_detection(
+        self, *, channel_id: int = 1, line_id: int = 1
+    ) -> LineDetectionConfig:
+        """Return one line-crossing rule from a camera's ISAPI config."""
+        path = f"/ISAPI/Smart/LineDetection/{channel_id}"
+        resp = self._request("GET", path)
+        return _parse_line_detection(resp.text, channel_id=channel_id, line_id=line_id)
+
+    def set_line_detection(
+        self,
+        *,
+        channel_id: int = 1,
+        line_id: int = 1,
+        enabled: Optional[bool] = None,
+        sensitivity: Optional[int] = None,
+        direction: Optional[str] = None,
+        start: Optional[tuple[int, int]] = None,
+        end: Optional[tuple[int, int]] = None,
+        verify: bool = True,
+    ) -> LineDetectionConfig:
+        """Safely update one line-crossing rule with read-back verification.
+
+        The current XML is read and modified in place so undocumented,
+        firmware-specific elements survive the PUT. Coordinates are expressed
+        in the device's normalized screen space (commonly 1000 by 1000).
+        """
+        if channel_id < 1 or line_id < 1:
+            raise ValueError("channel_id and line_id must be positive")
+        if enabled is not None and not isinstance(enabled, bool):
+            raise ValueError("enabled must be a boolean")
+        if (start is None) != (end is None):
+            raise ValueError("start and end must be supplied together")
+        if sensitivity is not None and not 1 <= sensitivity <= 100:
+            raise ValueError("sensitivity must be between 1 and 100")
+        allowed_directions = {"any", "left-right", "right-left"}
+        if direction is not None and direction not in allowed_directions:
+            raise ValueError("direction must be one of: any, left-right, right-left")
+
+        path = f"/ISAPI/Smart/LineDetection/{channel_id}"
+        cur = self._request("GET", path)
+        current = _parse_line_detection(
+            cur.text, channel_id=channel_id, line_id=line_id
+        )
+        if current.multi_scene_supported:
+            raise NotImplementedError(
+                "multi-scene LineDetection requires the separate lineDetectionItem endpoint"
+            )
+        desired_enabled = current.enabled if enabled is None else enabled
+        desired_sensitivity = (
+            current.sensitivity if sensitivity is None else sensitivity
+        )
+        desired_direction = current.direction if direction is None else direction
+        desired_start = current.start if start is None else start
+        desired_end = current.end if end is None else end
+        _validate_point(
+            "start", desired_start, current.screen_width, current.screen_height
+        )
+        _validate_point("end", desired_end, current.screen_width, current.screen_height)
+        if desired_enabled and desired_start == desired_end:
+            raise ValueError("an enabled line must use two different points")
+
+        desired_global = desired_enabled
+
+        desired = (
+            desired_enabled,
+            desired_global,
+            desired_sensitivity,
+            desired_direction,
+            desired_start,
+            desired_end,
+        )
+        actual = (
+            current.enabled,
+            current.global_enabled,
+            current.sensitivity,
+            current.direction,
+            current.start,
+            current.end,
+        )
+        if desired == actual:
+            return current
+
+        try:
+            root = parse(cur.text)
+        except Exception as exc:
+            raise HikXMLError(f"LineDetection (pre-PUT) not XML: {exc}") from exc
+        global_enabled = _direct_child(root, "enabled")
+        line = _find_line_item(root, line_id)
+        if global_enabled is None or line is None:
+            raise HikXMLError("LineDetection response is missing required elements")
+        _set_direct_text(global_enabled, str(desired_global).lower())
+        _require_direct_text(line, "sensitivityLevel", str(desired_sensitivity))
+        _require_direct_text(line, "directionSensitivity", desired_direction)
+        coordinates = _coordinates(line)
+        if len(coordinates) < 2:
+            raise HikXMLError("LineItem must contain at least two Coordinates")
+        _set_coordinate(coordinates[0], desired_start)
+        _set_coordinate(coordinates[1], desired_end)
+
+        self._request("PUT", path, data=to_xml(root))
+        if not verify:
+            return LineDetectionConfig(
+                channel_id=channel_id,
+                line_id=line_id,
+                enabled=desired_enabled,
+                global_enabled=desired_global,
+                item_enabled=current.item_enabled,
+                multi_scene_supported=False,
+                sensitivity=desired_sensitivity,
+                direction=desired_direction,
+                start=desired_start,
+                end=desired_end,
+                screen_width=current.screen_width,
+                screen_height=current.screen_height,
+            )
+
+        verified = self.get_line_detection(channel_id=channel_id, line_id=line_id)
+        verified_values = (
+            verified.enabled,
+            verified.global_enabled,
+            verified.sensitivity,
+            verified.direction,
+            verified.start,
+            verified.end,
+        )
+        if verified_values != desired:
+            raise HikXMLError(
+                "LineDetection read-back does not match the requested config"
+            )
+        return verified
 
     # ---- power ----
     def reboot(self) -> None:
@@ -293,3 +422,141 @@ def _set_dns(root, idx: int, value: str) -> None:
     if not set_local_text(elem, "ipAddress", value):
         ip_el = ET.SubElement(elem, "ipAddress")
         ip_el.text = value
+
+
+# --- helpers for LineDetection XML -------------------------------------
+
+
+def _direct_child(elem: ET.Element, name: str) -> Optional[ET.Element]:
+    for child in elem:
+        if localname(child.tag) == name:
+            return child
+    return None
+
+
+def _direct_text(elem: ET.Element, name: str) -> Optional[str]:
+    child = _direct_child(elem, name)
+    if child is None or child.text is None:
+        return None
+    return child.text.strip() or None
+
+
+def _set_direct_text(elem: ET.Element, value: str) -> None:
+    elem.text = value
+
+
+def _require_direct_text(elem: ET.Element, name: str, value: str) -> None:
+    child = _direct_child(elem, name)
+    if child is None:
+        raise HikXMLError(f"LineDetection element missing: {name}")
+    child.text = value
+
+
+def _find_line_item(root: ET.Element, line_id: int) -> Optional[ET.Element]:
+    for elem in root.iter():
+        if localname(elem.tag) != "LineItem":
+            continue
+        if _direct_text(elem, "id") == str(line_id):
+            return elem
+    return None
+
+
+def _coordinates(line: ET.Element) -> list[ET.Element]:
+    return [elem for elem in line.iter() if localname(elem.tag) == "Coordinates"]
+
+
+def _coordinate(elem: ET.Element) -> tuple[int, int]:
+    x = _direct_text(elem, "positionX")
+    y = _direct_text(elem, "positionY")
+    if x is None or y is None:
+        raise HikXMLError("Coordinates missing positionX or positionY")
+    try:
+        return int(x), int(y)
+    except ValueError as exc:
+        raise HikXMLError("Coordinates must be integers") from exc
+
+
+def _set_coordinate(elem: ET.Element, point: tuple[int, int]) -> None:
+    _require_direct_text(elem, "positionX", str(point[0]))
+    _require_direct_text(elem, "positionY", str(point[1]))
+
+
+def _parse_bool(value: Optional[str], *, field: str) -> bool:
+    if value == "true":
+        return True
+    if value == "false":
+        return False
+    raise HikXMLError(f"LineDetection {field} must be true or false")
+
+
+def _parse_required_int(elem: ET.Element, name: str) -> int:
+    value = _direct_text(elem, name)
+    if value is None:
+        raise HikXMLError(f"LineDetection element missing: {name}")
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise HikXMLError(f"LineDetection {name} must be an integer") from exc
+
+
+def _parse_descendant_required_int(elem: ET.Element, name: str) -> int:
+    value = find_local_text(elem, name)
+    if value is None:
+        raise HikXMLError(f"LineDetection element missing: {name}")
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise HikXMLError(f"LineDetection {name} must be an integer") from exc
+
+
+def _parse_line_detection(
+    xml: str, *, channel_id: int, line_id: int
+) -> LineDetectionConfig:
+    try:
+        root = parse(xml)
+    except Exception as exc:
+        raise HikXMLError(f"LineDetection not XML: {exc}") from exc
+    line = _find_line_item(root, line_id)
+    if line is None:
+        raise HikXMLError(f"LineDetection line id {line_id} not found")
+    points = _coordinates(line)
+    if len(points) < 2:
+        raise HikXMLError("LineItem must contain at least two Coordinates")
+    direction = _direct_text(line, "directionSensitivity")
+    if direction is None:
+        raise HikXMLError("LineDetection directionSensitivity is missing")
+    global_enabled = _parse_bool(_direct_text(root, "enabled"), field="global enabled")
+    item_enabled = _parse_bool(_direct_text(line, "enabled"), field="item enabled")
+    multi_scene_supported = _parse_bool(
+        find_local_text(root, "isSupportMultiScene"),
+        field="isSupportMultiScene",
+    )
+    return LineDetectionConfig(
+        channel_id=channel_id,
+        line_id=line_id,
+        enabled=global_enabled and (item_enabled if multi_scene_supported else True),
+        global_enabled=global_enabled,
+        item_enabled=item_enabled,
+        multi_scene_supported=multi_scene_supported,
+        sensitivity=_parse_required_int(line, "sensitivityLevel"),
+        direction=direction,
+        start=_coordinate(points[0]),
+        end=_coordinate(points[1]),
+        screen_width=_parse_descendant_required_int(root, "normalizedScreenWidth"),
+        screen_height=_parse_descendant_required_int(root, "normalizedScreenHeight"),
+        raw_xml=xml,
+    )
+
+
+def _validate_point(name: str, point: tuple[int, int], width: int, height: int) -> None:
+    if (
+        not isinstance(point, tuple)
+        or len(point) != 2
+        or any(isinstance(value, bool) or not isinstance(value, int) for value in point)
+    ):
+        raise ValueError(f"{name} must be a pair of integers")
+    x, y = point
+    if not 0 <= x <= width or not 0 <= y <= height:
+        raise ValueError(
+            f"{name} must be within normalized screen bounds {width}x{height}"
+        )

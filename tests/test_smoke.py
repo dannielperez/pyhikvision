@@ -10,6 +10,7 @@ def test_public_api():
     assert hasattr(pyhikvision, "batch_set_ip")
     assert hasattr(pyhikvision, "DeviceInfo")
     assert hasattr(pyhikvision, "NetworkConfig")
+    assert hasattr(pyhikvision, "LineDetectionConfig")
 
 
 def test_xml_helpers_namespace_strip():

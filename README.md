@@ -32,6 +32,28 @@ with HikClient("192.168.1.64", "admin", "MyPass!") as cam:
     cam.reboot()
 ```
 
+## Line-crossing analytics
+
+Line geometry uses the camera's normalized screen coordinates (usually
+`1000 × 1000`). Updates preserve the device's existing XML fields and verify
+the saved rule by reading it back. Single-scene firmware uses the global
+`enabled` switch even when its nested item flag remains false. Recording
+schedules are not changed.
+
+```python
+with HikClient("192.168.1.64", "admin", "MyPass!") as cam:
+    rule = cam.set_line_detection(
+        channel_id=1,
+        line_id=1,
+        enabled=True,
+        sensitivity=50,
+        direction="any",
+        start=(610, 590),
+        end=(800, 1000),
+    )
+    print(rule.to_dict())
+```
+
 ## Batch IP migration (parallel)
 
 ```python
