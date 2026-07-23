@@ -89,3 +89,18 @@ class HikClient:
 
     def reboot(self) -> None:
         return self._impl.reboot()
+
+    def get_users(self) -> list[dict]:
+        return self._impl.get_users()
+
+    def change_password(
+        self,
+        new_password: str,
+        *,
+        user_name: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ) -> None:
+        """Rotate an account's password (see :meth:`IsapiClient.set_user_password`)."""
+        return self._impl.set_user_password(
+            new_password, user_name=user_name, user_id=user_id
+        )

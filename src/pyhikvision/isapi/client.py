@@ -9,6 +9,8 @@ Endpoints implemented (sufficient for IP-migration workflows):
 - GET  /ISAPI/System/Network/interfaces/{n}/ipAddress
 - PUT  /ISAPI/System/Network/interfaces/{n}/ipAddress
 - PUT  /ISAPI/System/reboot
+- GET  /ISAPI/Security/users
+- PUT  /ISAPI/Security/users/{id}
 
 Reference: Hikvision ISAPI 2.x specification (publicly distributed under
 "Hikvision ISAPI Open Platform Network Communication Specification").
@@ -19,6 +21,7 @@ from __future__ import annotations
 import logging
 import xml.etree.ElementTree as ET
 from typing import Optional
+from xml.sax.saxutils import escape
 
 import requests
 from requests.auth import HTTPBasicAuth, HTTPDigestAuth
@@ -30,6 +33,7 @@ from requests.exceptions import (
 from .._xml import find_local_text, localname, parse, set_local_text, to_xml
 from ..exceptions import (
     HikAuthError,
+    HikError,
     HikHTTPError,
     HikUnreachableError,
     HikXMLError,
@@ -365,6 +369,113 @@ class IsapiClient:
         except HikUnreachableError:
             # Reboot frequently drops the connection mid-response; tolerate.
             return
+
+    # ---- user / password management ----
+    def get_users(self) -> list[dict]:
+        """Return the device's user accounts from GET /ISAPI/Security/users.
+
+        Each entry is ``{"id", "user_name", "user_level"}`` (password is never
+        returned by the device). Namespace-agnostic parse, so it works across
+        the ``hikvision.com`` and ``std-cgi.com`` (OEM) schema variants.
+        """
+        resp = self._request("GET", "/ISAPI/Security/users")
+        try:
+            root = parse(resp.text)
+        except Exception as exc:
+            raise HikXMLError(f"users list not XML: {exc}") from exc
+        users: list[dict] = []
+        for el in root.iter():
+            if localname(el.tag) == "User":
+                users.append(
+                    {
+                        "id": find_local_text(el, "id"),
+                        "user_name": find_local_text(el, "userName"),
+                        "user_level": find_local_text(el, "userLevel"),
+                    }
+                )
+        return users
+
+    def set_user_password(
+        self,
+        new_password: str,
+        *,
+        user_name: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ) -> None:
+        """Change an account's password via PUT /ISAPI/Security/users/{id}.
+
+        The target user is resolved from ``GET /ISAPI/Security/users`` by, in
+        order: explicit ``user_id``, explicit ``user_name``, the account this
+        client authenticates as, or — when the device has exactly one account —
+        that sole user. The PUT authenticates with the client's *current*
+        credentials, so with no selector this rotates the logged-in account's
+        own password.
+
+        The new password is sent in plaintext over the (digest-authenticated)
+        ISAPI channel, matching Hikvision's default security model. Firmwares
+        that *mandate* the salted "security version" upload
+        (``/ISAPI/Security/userCheck`` challenge) are not yet supported and
+        will reject the change with :class:`HikHTTPError`. Some OEM firmwares
+        also cap password length (e.g. ``SecurityCap/LoginPasswordLenLimit``);
+        an over-long secret is likewise rejected by the device, not here.
+        """
+        resp = self._request("GET", "/ISAPI/Security/users")
+        try:
+            root = parse(resp.text)
+        except Exception as exc:
+            raise HikXMLError(f"users list not XML: {exc}") from exc
+
+        target = self._select_user(root, user_name=user_name, user_id=user_id)
+        if target is None:
+            raise HikError(
+                f"user not found (user_name={user_name!r}, user_id={user_id!r})"
+            )
+        uid = find_local_text(target, "id")
+        uname = find_local_text(target, "userName")
+        if not uid or not uname:
+            raise HikXMLError("user entry missing <id>/<userName>")
+
+        # Preserve the device's exact namespace on the PUT — Hikvision firmwares
+        # (and OEM std-cgi variants) reject a mismatched/absent xmlns. Build the
+        # body explicitly to control element order (id, userName, password).
+        ns = _namespace_of(root.tag) or "http://www.hikvision.com/ver20/XMLSchema"
+        body = (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            f'<User version="2.0" xmlns="{ns}">'
+            f"<id>{escape(uid)}</id>"
+            f"<userName>{escape(uname)}</userName>"
+            f"<password>{escape(new_password)}</password>"
+            "</User>"
+        )
+        self._request("PUT", f"/ISAPI/Security/users/{uid}", data=body)
+
+    def _select_user(self, root, *, user_name=None, user_id=None):
+        """Pick the target <User> element from a parsed UserList."""
+        users = [el for el in root.iter() if localname(el.tag) == "User"]
+        if user_id is not None:
+            return next(
+                (el for el in users if find_local_text(el, "id") == str(user_id)),
+                None,
+            )
+        if user_name is not None:
+            return next(
+                (el for el in users if find_local_text(el, "userName") == user_name),
+                None,
+            )
+        own = next(
+            (el for el in users if find_local_text(el, "userName") == self.user),
+            None,
+        )
+        if own is not None:
+            return own
+        return users[0] if len(users) == 1 else None
+
+
+def _namespace_of(tag: str) -> str:
+    """Extract the ``{ns}`` prefix from an ElementTree tag, or ``""``."""
+    if tag.startswith("{"):
+        return tag[1:].split("}", 1)[0]
+    return ""
 
 
 # --- helpers for nested gateway/DNS XML structures ----------------------
