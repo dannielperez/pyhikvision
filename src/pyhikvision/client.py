@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Optional
 
 from .isapi.client import IsapiClient
-from .models import DeviceInfo, LineDetectionConfig, NetworkConfig
+from .models import ChannelInfo, DeviceInfo, LineDetectionConfig, NetworkConfig
 
 
 class HikClient:
@@ -86,6 +86,15 @@ class HikClient:
 
     def set_line_detection(self, **kwargs) -> LineDetectionConfig:
         return self._impl.set_line_detection(**kwargs)
+
+    def input_proxy_channels(self, **kwargs) -> list[ChannelInfo]:
+        return self._impl.input_proxy_channels(**kwargs)
+
+    def video_input_channels(self, **kwargs) -> list[ChannelInfo]:
+        return self._impl.video_input_channels(**kwargs)
+
+    def channels(self, **kwargs) -> list[ChannelInfo]:
+        return self._impl.channels(**kwargs)
 
     def reboot(self) -> None:
         return self._impl.reboot()
