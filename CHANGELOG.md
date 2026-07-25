@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **`HikClient` now forwards channel enumeration.** The facade delegates
+  explicitly and has no `__getattr__` passthrough, so `input_proxy_channels()`,
+  `video_input_channels()` and `channels()` shipped on `IsapiClient` but were
+  unreachable through `HikClient` — the class most consumers hold. Calling them
+  raised `AttributeError`, which a caller's broad error handler would report as
+  an ordinary connection failure, so a healthy recorder looked unreachable.
+  Added `tests/test_client_facade.py` pinning every delegated method in both
+  directions (facade forwards it, implementation still has it) plus kwarg
+  forwarding, so the facade cannot silently fall behind the implementation
+  again.
+
 ### Added
 - **Channel enumeration.** `IsapiClient.input_proxy_channels()` (the IP cameras
   an NVR has adopted, `GET /ISAPI/ContentMgmt/InputProxy/channels`),
