@@ -64,3 +64,36 @@ class LineDetectionConfig:
         d = asdict(self)
         d.pop("raw_xml", None)
         return d
+
+
+@dataclass
+class ChannelInfo:
+    """One video channel exposed by a Hikvision device.
+
+    Covers both channel families an NVR reports:
+
+    * **input-proxy channels** — the IP cameras a recorder has adopted, listed
+      by ``/ISAPI/ContentMgmt/InputProxy/channels``. These carry a source
+      address and are the interesting ones for inventory.
+    * **video-input channels** — the device's own local/analog inputs, listed
+      by ``/ISAPI/System/Video/inputs/channels``. A standalone camera reports
+      only these.
+
+    ``online`` is ``None`` when the caller did not ask for status (it costs a
+    second request), so a consumer can distinguish "offline" from "unknown".
+    """
+
+    id: int
+    name: Optional[str] = None
+    online: Optional[bool] = None
+    source_ip: Optional[str] = None
+    source_port: Optional[int] = None
+    source_channel: Optional[int] = None
+    protocol: Optional[str] = None
+    kind: str = "input_proxy"  # "input_proxy" | "video_input"
+    raw_xml: Optional[str] = None
+
+    def to_dict(self) -> dict:
+        d = asdict(self)
+        d.pop("raw_xml", None)
+        return d

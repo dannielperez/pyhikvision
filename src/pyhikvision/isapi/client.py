@@ -11,6 +11,9 @@ Endpoints implemented (sufficient for IP-migration workflows):
 - PUT  /ISAPI/System/reboot
 - GET  /ISAPI/Security/users
 - PUT  /ISAPI/Security/users/{id}
+- GET  /ISAPI/ContentMgmt/InputProxy/channels
+- GET  /ISAPI/ContentMgmt/InputProxy/channels/status
+- GET  /ISAPI/System/Video/inputs/channels
 
 Reference: Hikvision ISAPI 2.x specification (publicly distributed under
 "Hikvision ISAPI Open Platform Network Communication Specification").
@@ -38,9 +41,24 @@ from ..exceptions import (
     HikUnreachableError,
     HikXMLError,
 )
-from ..models import DeviceInfo, LineDetectionConfig, NetworkConfig
+from ..models import ChannelInfo, DeviceInfo, LineDetectionConfig, NetworkConfig
 
 logger = logging.getLogger(__name__)
+
+
+def _optional_int(value: Optional[str]) -> Optional[int]:
+    """Parse an optional numeric element, returning None when absent/unusable.
+
+    Firmware omits optional elements rather than sending empty ones, and a
+    non-numeric value is meaningless here — better an explicit None than a
+    guessed 0.
+    """
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
 
 
 class IsapiClient:
@@ -361,6 +379,199 @@ class IsapiClient:
                 "LineDetection read-back does not match the requested config"
             )
         return verified
+
+    # ---- channel enumeration ----
+    def input_proxy_channels(
+        self,
+        *,
+        with_status: bool = False,
+        timeout: Optional[float] = None,
+    ) -> list[ChannelInfo]:
+        """Return the IP cameras this recorder has adopted.
+
+        ``GET /ISAPI/ContentMgmt/InputProxy/channels`` — the NVR-side list of
+        proxied cameras, each with its source address. A standalone camera
+        typically returns 404/empty here; use :meth:`video_input_channels` for
+        its own inputs, or :meth:`channels` to get both.
+
+        ``with_status=True`` issues one extra request against
+        ``.../channels/status`` and fills :attr:`ChannelInfo.online`. Without
+        it ``online`` stays ``None`` — "unknown", not "offline".
+
+        Every request is timeout-bounded: ``timeout`` overrides the client
+        default for this call only.
+        """
+        resp = self._request(
+            "GET",
+            "/ISAPI/ContentMgmt/InputProxy/channels",
+            timeout=timeout,
+        )
+        channels = self._parse_channel_list(
+            resp.text,
+            item_name="InputProxyChannel",
+            kind="input_proxy",
+        )
+        if with_status and channels:
+            self._apply_channel_status(channels, timeout=timeout)
+        return channels
+
+    def video_input_channels(
+        self,
+        *,
+        timeout: Optional[float] = None,
+    ) -> list[ChannelInfo]:
+        """Return the device's own video input channels.
+
+        ``GET /ISAPI/System/Video/inputs/channels`` — local/analog inputs. These
+        have no source address, so only ``id``/``name`` are populated.
+        """
+        resp = self._request(
+            "GET",
+            "/ISAPI/System/Video/inputs/channels",
+            timeout=timeout,
+        )
+        return self._parse_channel_list(
+            resp.text,
+            item_name="VideoInputChannel",
+            kind="video_input",
+        )
+
+    def channels(
+        self,
+        *,
+        with_status: bool = False,
+        timeout: Optional[float] = None,
+    ) -> list[ChannelInfo]:
+        """Return every channel the device exposes, proxied inputs first.
+
+        Tries input-proxy channels then video inputs, tolerating a device that
+        implements only one family: a missing endpoint (404) or an unparseable
+        body for ONE family is skipped rather than failing the whole
+        enumeration. If BOTH fail the underlying error propagates, so a caller
+        never mistakes a broken device for one with no cameras.
+
+        Results are de-duplicated by ``(kind, id)`` and returned in ascending
+        ``id`` order within each family.
+        """
+        collected: list[ChannelInfo] = []
+        errors: list[Exception] = []
+
+        for loader in (
+            lambda: self.input_proxy_channels(
+                with_status=with_status,
+                timeout=timeout,
+            ),
+            lambda: self.video_input_channels(timeout=timeout),
+        ):
+            try:
+                collected.extend(loader())
+            except (HikHTTPError, HikXMLError) as exc:
+                errors.append(exc)
+
+        if errors and not collected:
+            raise errors[0]
+
+        seen: set[tuple[str, int]] = set()
+        unique: list[ChannelInfo] = []
+        for channel in collected:
+            key = (channel.kind, channel.id)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(channel)
+        return unique
+
+    def _apply_channel_status(
+        self,
+        channels: list[ChannelInfo],
+        *,
+        timeout: Optional[float] = None,
+    ) -> None:
+        """Best-effort online flags from .../InputProxy/channels/status.
+
+        A device that does not implement the status endpoint simply leaves
+        ``online`` as ``None``; enumeration must not fail because status is
+        unavailable.
+        """
+        try:
+            resp = self._request(
+                "GET",
+                "/ISAPI/ContentMgmt/InputProxy/channels/status",
+                timeout=timeout,
+            )
+            root = parse(resp.text)
+        except (HikHTTPError, HikUnreachableError, HikXMLError):
+            logger.debug("InputProxy channel status unavailable", exc_info=True)
+            return
+
+        online_by_id: dict[int, bool] = {}
+        for item in root.iter():
+            if localname(item.tag) != "InputProxyChannelStatus":
+                continue
+            raw_id = find_local_text(item, "id")
+            if raw_id is None:
+                continue
+            try:
+                channel_id = int(raw_id)
+            except ValueError:
+                continue
+            raw_online = find_local_text(item, "online")
+            if raw_online is not None:
+                online_by_id[channel_id] = raw_online.strip().lower() == "true"
+
+        for channel in channels:
+            if channel.id in online_by_id:
+                channel.online = online_by_id[channel.id]
+
+    @staticmethod
+    def _parse_channel_list(
+        text: str,
+        *,
+        item_name: str,
+        kind: str,
+    ) -> list[ChannelInfo]:
+        """Parse a channel list body into typed rows.
+
+        Namespace-agnostic (firmware ships both ``hikvision.com`` and
+        ``std-cgi.com`` namespaces). A row without a usable integer ``id`` is
+        skipped rather than guessed at — a channel with no identity cannot be
+        matched to inventory.
+        """
+        try:
+            root = parse(text)
+        except HikXMLError:
+            raise
+        except Exception as exc:  # pragma: no cover - parse() already wraps
+            raise HikXMLError(str(exc)) from exc
+
+        channels: list[ChannelInfo] = []
+        for item in root.iter():
+            if localname(item.tag) != item_name:
+                continue
+            raw_id = find_local_text(item, "id")
+            if raw_id is None:
+                continue
+            try:
+                channel_id = int(raw_id)
+            except ValueError:
+                continue
+
+            source_port = _optional_int(find_local_text(item, "managePortNo"))
+            source_channel = _optional_int(find_local_text(item, "srcInputPort"))
+            channels.append(
+                ChannelInfo(
+                    id=channel_id,
+                    name=find_local_text(item, "name"),
+                    source_ip=find_local_text(item, "ipAddress"),
+                    source_port=source_port,
+                    source_channel=source_channel,
+                    protocol=find_local_text(item, "proxyProtocol"),
+                    kind=kind,
+                    raw_xml=to_xml(item),
+                ),
+            )
+        channels.sort(key=lambda channel: channel.id)
+        return channels
 
     # ---- power ----
     def reboot(self) -> None:

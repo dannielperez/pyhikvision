@@ -10,7 +10,7 @@ Public API:
 
 from .client import HikClient
 from .isapi import IsapiClient, batch_set_ip
-from .models import DeviceInfo, LineDetectionConfig, NetworkConfig
+from .models import ChannelInfo, DeviceInfo, LineDetectionConfig, NetworkConfig
 from .exceptions import (
     HikError,
     HikAuthError,
@@ -25,6 +25,7 @@ __all__ = [
     "HikClient",
     "IsapiClient",
     "batch_set_ip",
+    "ChannelInfo",
     "DeviceInfo",
     "NetworkConfig",
     "LineDetectionConfig",
