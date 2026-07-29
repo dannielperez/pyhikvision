@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- **Password rotation now refuses unsupported salted uploads actionably.**
+  `IsapiClient.set_user_password()` pre-flights the device security capability
+  and raises `HikUnsupportedPasswordEncodingError` before any PUT when the
+  firmware mandates a salted `securityVersion` upload. Older, missing, and
+  unreadable capability endpoints fail open to the unchanged plaintext PUT.
 - **`HikClient` now forwards channel enumeration.** The facade delegates
   explicitly and has no `__getattr__` passthrough, so `input_proxy_channels()`,
   `video_input_channels()` and `channels()` shipped on `IsapiClient` but were
