@@ -23,8 +23,10 @@ Reference: Hikvision ISAPI 2.x specification (publicly distributed under
 from __future__ import annotations
 
 import logging
+import subprocess
 import xml.etree.ElementTree as ET
 from typing import Optional
+from urllib.parse import quote
 from xml.sax.saxutils import escape
 
 import requests
@@ -101,6 +103,7 @@ class IsapiClient:
         timeout: float = 10.0,
         verify_tls: bool = False,
         interface_id: int = 1,
+        rtsp_port: int = 554,
     ) -> None:
         self.host = host
         self.user = user
@@ -112,6 +115,7 @@ class IsapiClient:
         self.timeout = timeout
         self.verify_tls = verify_tls
         self.interface_id = interface_id
+        self.rtsp_port = rtsp_port
 
         self._session = requests.Session()
         # Hikvision firmwares vary: some use Digest, older ones Basic.
@@ -499,6 +503,102 @@ class IsapiClient:
             seen.add(key)
             unique.append(channel)
         return unique
+
+    # ---- still-image media ----
+    @staticmethod
+    def _streaming_channel_id(channel_id: int, stream: str) -> int:
+        """Map a one-based recorder input and stream onto an ISAPI channel id."""
+        if isinstance(channel_id, bool) or not isinstance(channel_id, int):
+            raise ValueError("channel_id must be an integer")
+        if channel_id < 1:
+            raise ValueError("channel_id must be positive")
+        stream_suffixes = {"main": 1, "sub": 2}
+        try:
+            suffix = stream_suffixes[stream]
+        except KeyError as exc:
+            raise ValueError("stream must be 'main' or 'sub'") from exc
+        return channel_id * 100 + suffix
+
+    def snapshot(
+        self,
+        *,
+        channel_id: int,
+        stream: str = "sub",
+        timeout: Optional[float] = None,
+    ) -> bytes:
+        """Fetch the recorder's native JPEG for one mapped video channel."""
+        streaming_id = self._streaming_channel_id(channel_id, stream)
+        path = f"/ISAPI/Streaming/channels/{streaming_id}/picture"
+        response = self._request("GET", path, timeout=timeout)
+        image = bytes(response.content)
+        if not image:
+            raise HikError(f"snapshot channel {streaming_id} returned no image")
+        return image
+
+    def rtsp_url(self, *, channel_id: int, stream: str = "sub") -> str:
+        """Return the authenticated RTSP URL for one recorder channel."""
+        streaming_id = self._streaming_channel_id(channel_id, stream)
+        username = quote(self.user, safe="")
+        password = quote(self.password, safe="")
+        host = self.host
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+        return (
+            f"rtsp://{username}:{password}@{host}:{self.rtsp_port}"
+            f"/Streaming/Channels/{streaming_id}"
+        )
+
+    def snapshot_rtsp(
+        self,
+        *,
+        channel_id: int,
+        stream: str = "sub",
+        timeout: int = 5,
+    ) -> bytes:
+        """Grab one tuned JPEG frame from the mapped RTSP stream."""
+        if isinstance(timeout, bool) or not isinstance(timeout, int) or timeout < 1:
+            raise ValueError("timeout must be a positive integer")
+        url = self.rtsp_url(channel_id=channel_id, stream=stream)
+        args = [
+            "ffmpeg",
+            "-y",
+            "-rtsp_transport",
+            "tcp",
+            "-probesize",
+            "32",
+            "-analyzeduration",
+            "0",
+            "-fflags",
+            "nobuffer",
+            "-flags",
+            "low_delay",
+            "-timeout",
+            str(timeout * 1_000_000),
+            "-i",
+            url,
+            "-an",
+            "-frames:v",
+            "1",
+            "-q:v",
+            "2",
+            "-f",
+            "image2",
+            "pipe:1",
+        ]
+        try:
+            result = subprocess.run(  # noqa: S603 - fixed binary and fixed flags
+                args,
+                capture_output=True,
+                timeout=timeout + 2,
+                check=False,
+            )
+        except FileNotFoundError as exc:
+            raise HikError("ffmpeg is unavailable for RTSP snapshot capture") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise HikUnreachableError("RTSP snapshot timed out") from exc
+        if result.returncode != 0 or not result.stdout:
+            raise HikUnreachableError("RTSP snapshot returned no image")
+        return result.stdout
 
     def _apply_channel_status(
         self,

@@ -30,6 +30,9 @@ DELEGATED = [
     "input_proxy_channels",
     "video_input_channels",
     "channels",
+    "snapshot",
+    "rtsp_url",
+    "snapshot_rtsp",
 ]
 
 
