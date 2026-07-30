@@ -57,7 +57,19 @@ def test_snapshot_refuses_an_empty_response(monkeypatch):
     )
     client = IsapiClient("10.40.31.250", "operator", "secret")
 
-    with pytest.raises(HikError, match="returned no image"):
+    with pytest.raises(HikError, match="returned no JPEG image"):
+        client.snapshot(channel_id=6)
+
+
+def test_snapshot_refuses_a_non_jpeg_success_response(monkeypatch):
+    monkeypatch.setattr(
+        IsapiClient,
+        "_request",
+        lambda *args, **kwargs: _Response(b"<ResponseStatus>error</ResponseStatus>"),
+    )
+    client = IsapiClient("10.40.31.250", "operator", "secret")
+
+    with pytest.raises(HikError, match="returned no JPEG image"):
         client.snapshot(channel_id=6)
 
 
@@ -93,7 +105,7 @@ def test_rtsp_snapshot_uses_tuned_single_frame_command(monkeypatch):
     assert args[-2:] == ["image2", "pipe:1"]
     assert "/Streaming/Channels/602" in args[args.index("-i") + 1]
     assert capture_output is True
-    assert timeout == 5
+    assert timeout == 3
     assert check is False
 
 

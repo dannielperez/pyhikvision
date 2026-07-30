@@ -531,8 +531,10 @@ class IsapiClient:
         path = f"/ISAPI/Streaming/channels/{streaming_id}/picture"
         response = self._request("GET", path, timeout=timeout)
         image = bytes(response.content)
-        if not image:
-            raise HikError(f"snapshot channel {streaming_id} returned no image")
+        if not image.startswith(b"\xff\xd8"):
+            raise HikError(
+                f"snapshot channel {streaming_id} returned no JPEG image",
+            )
         return image
 
     def rtsp_url(self, *, channel_id: int, stream: str = "sub") -> str:
@@ -589,7 +591,7 @@ class IsapiClient:
             result = subprocess.run(  # noqa: S603 - fixed binary and fixed flags
                 args,
                 capture_output=True,
-                timeout=timeout + 2,
+                timeout=timeout,
                 check=False,
             )
         except FileNotFoundError as exc:
