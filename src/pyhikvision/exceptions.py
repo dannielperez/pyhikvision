@@ -5,6 +5,12 @@ class HikError(Exception):
     """Base exception for all pyhikvision errors."""
 
 
+class HikUnsupportedPasswordEncodingError(HikError):
+    """The device mandates the salted securityVersion upload, which this library
+    deliberately does not implement.
+    """
+
+
 class HikAuthError(HikError):
     """Authentication failed (401 / wrong credentials)."""
 

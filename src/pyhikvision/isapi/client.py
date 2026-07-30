@@ -9,6 +9,7 @@ Endpoints implemented (sufficient for IP-migration workflows):
 - GET  /ISAPI/System/Network/interfaces/{n}/ipAddress
 - PUT  /ISAPI/System/Network/interfaces/{n}/ipAddress
 - PUT  /ISAPI/System/reboot
+- GET  /ISAPI/Security/capabilities
 - GET  /ISAPI/Security/users
 - PUT  /ISAPI/Security/users/{id}
 - GET  /ISAPI/ContentMgmt/InputProxy/channels
@@ -38,6 +39,7 @@ from ..exceptions import (
     HikAuthError,
     HikError,
     HikHTTPError,
+    HikUnsupportedPasswordEncodingError,
     HikUnreachableError,
     HikXMLError,
 )
@@ -59,6 +61,23 @@ def _optional_int(value: Optional[str]) -> Optional[int]:
         return int(value)
     except ValueError:
         return None
+
+
+def _requires_salted_password_upload(value: object) -> bool:
+    """Return whether securityVersion labels a rejected PUT as salted-only.
+
+    This heuristic is consulted only after the device has rejected the legacy
+    plaintext password PUT; it never decides whether rotation is attempted.
+    Hikvision documents securityVersion as a numeric encryption version, so a
+    positive version makes that rejection actionable as an unsupported salted
+    upload. Unknown values leave the original rejection unchanged.
+    """
+    if isinstance(value, bool):
+        return False
+    try:
+        return int(value) > 0
+    except (TypeError, ValueError):
+        return False
 
 
 class IsapiClient:
@@ -606,6 +625,28 @@ class IsapiClient:
                 )
         return users
 
+    def get_security_capabilities(self) -> dict:
+        """Return password-related fields from GET /ISAPI/Security/capabilities.
+
+        Older firmware may not implement this endpoint. An absent or unreadable
+        capability document is therefore returned as an empty mapping so
+        callers can preserve the legacy password PUT path.
+        """
+        try:
+            resp = self._request("GET", "/ISAPI/Security/capabilities")
+        except HikHTTPError:
+            return {}
+        try:
+            root = parse(resp.text)
+        except (ET.ParseError, TypeError):
+            return {}
+        return {
+            "securityVersion": find_local_text(root, "securityVersion"),
+            "LoginPasswordLenLimit": _optional_int(
+                find_local_text(root, "LoginPasswordLenLimit")
+            ),
+        }
+
     def set_user_password(
         self,
         new_password: str,
@@ -623,12 +664,13 @@ class IsapiClient:
         own password.
 
         The new password is sent in plaintext over the (digest-authenticated)
-        ISAPI channel, matching Hikvision's default security model. Firmwares
-        that *mandate* the salted "security version" upload
-        (``/ISAPI/Security/userCheck`` challenge) are not yet supported and
-        will reject the change with :class:`HikHTTPError`. Some OEM firmwares
-        also cap password length (e.g. ``SecurityCap/LoginPasswordLenLimit``);
-        an over-long secret is likewise rejected by the device, not here.
+        ISAPI channel, matching Hikvision's default security model. When that
+        PUT is rejected and the device reports a salted "security version"
+        scheme (``/ISAPI/Security/userCheck`` challenge), this raises
+        :class:`HikUnsupportedPasswordEncodingError`; that encoding is
+        deliberately not implemented. Some OEM firmwares also cap password
+        length (e.g. ``SecurityCap/LoginPasswordLenLimit``); an over-long
+        secret is still rejected by the device, not here.
         """
         resp = self._request("GET", "/ISAPI/Security/users")
         try:
@@ -658,7 +700,24 @@ class IsapiClient:
             f"<password>{escape(new_password)}</password>"
             "</User>"
         )
-        self._request("PUT", f"/ISAPI/Security/users/{uid}", data=body)
+        try:
+            self._request("PUT", f"/ISAPI/Security/users/{uid}", data=body)
+        except HikHTTPError as exc:
+            try:
+                capabilities = self.get_security_capabilities()
+                salted_rejection = _requires_salted_password_upload(
+                    capabilities.get("securityVersion")
+                )
+            except Exception:
+                salted_rejection = False
+            if salted_rejection:
+                raise HikUnsupportedPasswordEncodingError(
+                    "This device requires Hikvision's salted securityVersion "
+                    "password upload, which pyhikvision deliberately does not "
+                    "implement; rotate the password through the device web "
+                    "interface or an approved out-of-band vendor tool."
+                ) from exc
+            raise
 
     def _select_user(self, root, *, user_name=None, user_id=None):
         """Pick the target <User> element from a parsed UserList."""
