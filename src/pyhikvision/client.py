@@ -33,6 +33,7 @@ class HikClient:
         timeout: float = 10.0,
         verify_tls: bool = False,
         interface_id: int = 1,
+        rtsp_port: int = 554,
     ) -> None:
         self.backend = backend.lower()
         if self.backend == "isapi":
@@ -45,6 +46,7 @@ class HikClient:
                 timeout=timeout,
                 verify_tls=verify_tls,
                 interface_id=interface_id,
+                rtsp_port=rtsp_port,
             )
         elif self.backend == "netsdk":
             from .netsdk import NetSdkClient
@@ -95,6 +97,15 @@ class HikClient:
 
     def channels(self, **kwargs) -> list[ChannelInfo]:
         return self._impl.channels(**kwargs)
+
+    def snapshot(self, **kwargs) -> bytes:
+        return self._impl.snapshot(**kwargs)
+
+    def rtsp_url(self, **kwargs) -> str:
+        return self._impl.rtsp_url(**kwargs)
+
+    def snapshot_rtsp(self, **kwargs) -> bytes:
+        return self._impl.snapshot_rtsp(**kwargs)
 
     def reboot(self) -> None:
         return self._impl.reboot()
