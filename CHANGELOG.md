@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- **RTSP capture now respects the recorder's advertised stream inventory.**
+  `snapshot_rtsp(stream="auto")` selects an enabled substream when present and
+  the enabled main stream otherwise, within one shared timeout budget. This
+  supports hybrid inputs that expose `1601` but no `1602`. The frame grab also
+  removes probe settings that caused valid Hikvision streams to fail before
+  codec discovery completed.
 - **Password rotation now refuses unsupported salted uploads actionably.**
   `IsapiClient.set_user_password()` pre-flights the device security capability
   and raises `HikUnsupportedPasswordEncodingError` before any PUT when the

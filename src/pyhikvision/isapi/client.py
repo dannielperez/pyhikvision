@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import subprocess
+import time
 import xml.etree.ElementTree as ET
 from typing import Optional
 from urllib.parse import quote
@@ -519,6 +520,67 @@ class IsapiClient:
             raise ValueError("stream must be 'main' or 'sub'") from exc
         return channel_id * 100 + suffix
 
+    def streaming_channel_ids(
+        self,
+        *,
+        enabled_only: bool = True,
+        timeout: Optional[float] = None,
+    ) -> list[int]:
+        """Return recorder-advertised ISAPI streaming channel identifiers.
+
+        Hybrid recorders do not necessarily expose both RTSP streams for every
+        logical input. For example, an adopted intercom can advertise ``1601``
+        without ``1602`` even when its native JPEG endpoint accepts both ids.
+        Consumers should use this inventory before selecting an RTSP URL rather
+        than waiting on a guessed, nonexistent substream.
+        """
+        response = self._request(
+            "GET",
+            "/ISAPI/Streaming/channels",
+            timeout=timeout,
+        )
+        root = parse(response.text)
+        channel_ids: set[int] = set()
+        for item in root.iter():
+            if localname(item.tag) != "StreamingChannel":
+                continue
+            raw_id = find_local_text(item, "id")
+            if raw_id is None:
+                continue
+            try:
+                streaming_id = int(raw_id)
+            except ValueError:
+                continue
+            if streaming_id < 1:
+                continue
+            enabled = find_local_text(item, "enabled")
+            if (
+                enabled_only
+                and enabled is not None
+                and enabled.strip().lower() == "false"
+            ):
+                continue
+            channel_ids.add(streaming_id)
+        return sorted(channel_ids)
+
+    def _resolve_rtsp_streaming_channel_id(
+        self,
+        *,
+        channel_id: int,
+        stream: str,
+        timeout: Optional[float],
+    ) -> int:
+        """Resolve ``auto`` to an advertised substream, then advertised main."""
+        if stream != "auto":
+            return self._streaming_channel_id(channel_id, stream)
+        substream_id = self._streaming_channel_id(channel_id, "sub")
+        main_stream_id = self._streaming_channel_id(channel_id, "main")
+        available = set(self.streaming_channel_ids(timeout=timeout))
+        for candidate in (substream_id, main_stream_id):
+            if candidate in available:
+                return candidate
+        raise HikError(f"channel {channel_id} advertises no enabled RTSP stream")
+
     def snapshot(
         self,
         *,
@@ -540,6 +602,10 @@ class IsapiClient:
     def rtsp_url(self, *, channel_id: int, stream: str = "sub") -> str:
         """Return the authenticated RTSP URL for one recorder channel."""
         streaming_id = self._streaming_channel_id(channel_id, stream)
+        return self._rtsp_url_for_streaming_channel(streaming_id)
+
+    def _rtsp_url_for_streaming_channel(self, streaming_id: int) -> str:
+        """Return an authenticated URL for one already-resolved stream id."""
         username = quote(self.user, safe="")
         password = quote(self.password, safe="")
         host = self.host
@@ -557,25 +623,31 @@ class IsapiClient:
         stream: str = "sub",
         timeout: int = 5,
     ) -> bytes:
-        """Grab one tuned JPEG frame from the mapped RTSP stream."""
+        """Grab one bounded JPEG frame from a mapped or advertised RTSP stream.
+
+        ``stream="auto"`` selects an advertised substream when present and the
+        advertised main stream otherwise. The discovery request and ffmpeg
+        share the caller's timeout budget.
+        """
         if isinstance(timeout, bool) or not isinstance(timeout, int) or timeout < 1:
             raise ValueError("timeout must be a positive integer")
-        url = self.rtsp_url(channel_id=channel_id, stream=stream)
+        started = time.monotonic()
+        streaming_id = self._resolve_rtsp_streaming_channel_id(
+            channel_id=channel_id,
+            stream=stream,
+            timeout=timeout,
+        )
+        remaining = timeout - (time.monotonic() - started)
+        if remaining <= 0:
+            raise HikUnreachableError("RTSP snapshot timed out")
+        url = self._rtsp_url_for_streaming_channel(streaming_id)
         args = [
             "ffmpeg",
             "-y",
             "-rtsp_transport",
             "tcp",
-            "-probesize",
-            "32",
-            "-analyzeduration",
-            "0",
-            "-fflags",
-            "nobuffer",
-            "-flags",
-            "low_delay",
             "-timeout",
-            str(timeout * 1_000_000),
+            str(max(1, int(remaining * 1_000_000))),
             "-i",
             url,
             "-an",
@@ -591,7 +663,7 @@ class IsapiClient:
             result = subprocess.run(  # noqa: S603 - fixed binary and fixed flags
                 args,
                 capture_output=True,
-                timeout=timeout,
+                timeout=remaining,
                 check=False,
             )
         except FileNotFoundError as exc:
