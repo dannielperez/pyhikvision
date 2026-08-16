@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import time
 
 import pytest
 
@@ -14,6 +15,16 @@ class _Response:
     def __init__(self, content: bytes = b"", text: str = "") -> None:
         self.content = content
         self.text = text
+        self.closed = False
+
+    def iter_content(self, *, chunk_size):
+        yield from (
+            self.content[offset : offset + chunk_size]
+            for offset in range(0, len(self.content), chunk_size)
+        )
+
+    def close(self):
+        self.closed = True
 
 
 @pytest.mark.parametrize(
@@ -37,8 +48,8 @@ def test_snapshot_fetches_native_jpeg_from_exact_channel(monkeypatch):
     calls = []
     image = b"\xff\xd8jpeg\xff\xd9"
 
-    def fake_request(self, method, path, *, data=None, timeout=None):
-        calls.append((method, path, data, timeout))
+    def fake_request(self, method, path, *, data=None, timeout=None, stream=False):
+        calls.append((method, path, data, timeout, stream))
         return _Response(image)
 
     monkeypatch.setattr(IsapiClient, "_request", fake_request)
@@ -46,7 +57,7 @@ def test_snapshot_fetches_native_jpeg_from_exact_channel(monkeypatch):
 
     assert client.snapshot(channel_id=16, stream="sub", timeout=4.5) == image
     assert calls == [
-        ("GET", "/ISAPI/Streaming/channels/1602/picture", None, 4.5),
+        ("GET", "/ISAPI/Streaming/channels/1602/picture", None, 4.5, True),
     ]
 
 
@@ -72,6 +83,42 @@ def test_snapshot_refuses_a_non_jpeg_success_response(monkeypatch):
 
     with pytest.raises(HikError, match="returned no JPEG image"):
         client.snapshot(channel_id=6)
+
+
+def test_snapshot_rejects_oversized_main_image_before_buffering(monkeypatch):
+    response = _Response()
+    response.iter_content = lambda **kwargs: iter(
+        [b"\xff\xd8" + (b"x" * (8 * 1024 * 1024))],
+    )
+    monkeypatch.setattr(
+        IsapiClient,
+        "_request",
+        lambda *args, **kwargs: response,
+    )
+    client = IsapiClient("10.40.31.250", "operator", "secret")
+
+    with pytest.raises(HikError, match="exceeded maximum image size"):
+        client.snapshot(channel_id=6, stream="main")
+
+    assert response.closed is True
+
+
+def test_snapshot_stops_a_drip_fed_body_at_total_deadline(monkeypatch):
+    response = _Response()
+    clock = iter([10.0, 10.1, 10.5, 11.1])
+    response.iter_content = lambda **kwargs: iter([b"\xff\xd8", b"jpeg", b"\xff\xd9"])
+    monkeypatch.setattr(time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(
+        IsapiClient,
+        "_request",
+        lambda *args, **kwargs: response,
+    )
+    client = IsapiClient("10.40.31.250", "operator", "secret")
+
+    with pytest.raises(HikUnreachableError, match="snapshot timed out"):
+        client.snapshot(channel_id=6, stream="main", timeout=1.0)
+
+    assert response.closed is True
 
 
 def test_rtsp_url_encodes_credentials_and_custom_port():
