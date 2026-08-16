@@ -52,6 +52,7 @@ logger = logging.getLogger(__name__)
 
 _SNAPSHOT_CHUNK_BYTES = 64 * 1024
 _MAX_SNAPSHOT_BYTES = 8 * 1024 * 1024
+_SNAPSHOT_TIMEOUT_PHASES = 8
 
 
 def _optional_int(value: Optional[str]) -> Optional[int]:
@@ -160,11 +161,22 @@ class IsapiClient:
         data: Optional[str] = None,
         timeout: Optional[float] = None,
         stream: bool = False,
+        deadline: Optional[float] = None,
     ) -> requests.Response:
         url = self._url(path)
         headers = {}
         if data is not None:
             headers["Content-Type"] = "application/xml"
+
+        def request_timeout() -> float:
+            configured = timeout or self.timeout
+            if deadline is None:
+                return configured
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise HikUnreachableError(f"{method} {url}: deadline expired")
+            return min(configured, remaining)
+
         try:
             resp = self._session.request(
                 method,
@@ -172,7 +184,7 @@ class IsapiClient:
                 auth=self._auth,
                 data=data,
                 headers=headers,
-                timeout=timeout or self.timeout,
+                timeout=request_timeout(),
                 verify=self.verify_tls,
                 stream=stream,
             )
@@ -189,7 +201,7 @@ class IsapiClient:
                     auth=self._fallback_auth,
                     data=data,
                     headers=headers,
-                    timeout=timeout or self.timeout,
+                    timeout=request_timeout(),
                     verify=self.verify_tls,
                     stream=stream,
                 )
@@ -605,9 +617,16 @@ class IsapiClient:
         if budget <= 0:
             raise ValueError("timeout must be a positive number")
         deadline = time.monotonic() + budget
+        phase_timeout = max(0.001, budget / _SNAPSHOT_TIMEOUT_PHASES)
         streaming_id = self._streaming_channel_id(channel_id, stream)
         path = f"/ISAPI/Streaming/channels/{streaming_id}/picture"
-        response = self._request("GET", path, timeout=budget, stream=True)
+        response = self._request(
+            "GET",
+            path,
+            timeout=phase_timeout,
+            stream=True,
+            deadline=deadline,
+        )
         image = bytearray()
         try:
             if time.monotonic() >= deadline:
