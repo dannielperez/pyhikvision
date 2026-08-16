@@ -50,6 +50,9 @@ from ..models import ChannelInfo, DeviceInfo, LineDetectionConfig, NetworkConfig
 
 logger = logging.getLogger(__name__)
 
+_SNAPSHOT_CHUNK_BYTES = 64 * 1024
+_MAX_SNAPSHOT_BYTES = 8 * 1024 * 1024
+
 
 def _optional_int(value: Optional[str]) -> Optional[int]:
     """Parse an optional numeric element, returning None when absent/unusable.
@@ -156,6 +159,7 @@ class IsapiClient:
         *,
         data: Optional[str] = None,
         timeout: Optional[float] = None,
+        stream: bool = False,
     ) -> requests.Response:
         url = self._url(path)
         headers = {}
@@ -170,12 +174,14 @@ class IsapiClient:
                 headers=headers,
                 timeout=timeout or self.timeout,
                 verify=self.verify_tls,
+                stream=stream,
             )
         except (RequestsConnectionError, RequestsTimeout) as exc:
             raise HikUnreachableError(f"{method} {url}: {exc}") from exc
 
         if resp.status_code == 401:
             # Try Basic auth fallback once
+            resp.close()
             try:
                 resp = self._session.request(
                     method,
@@ -185,14 +191,18 @@ class IsapiClient:
                     headers=headers,
                     timeout=timeout or self.timeout,
                     verify=self.verify_tls,
+                    stream=stream,
                 )
             except (RequestsConnectionError, RequestsTimeout) as exc:
                 raise HikUnreachableError(f"{method} {url}: {exc}") from exc
             if resp.status_code == 401:
+                resp.close()
                 raise HikAuthError(f"401 from {url} (digest+basic both failed)")
 
         if not (200 <= resp.status_code < 300):
-            raise HikHTTPError(resp.status_code, url, resp.text)
+            detail = "" if stream else resp.text
+            resp.close()
+            raise HikHTTPError(resp.status_code, url, detail)
         return resp
 
     # ---- device info ----
@@ -588,11 +598,31 @@ class IsapiClient:
         stream: str = "sub",
         timeout: Optional[float] = None,
     ) -> bytes:
-        """Fetch the recorder's native JPEG for one mapped video channel."""
+        """Fetch one native JPEG within a total content and memory budget."""
+        budget = self.timeout if timeout is None else timeout
+        if isinstance(budget, bool) or not isinstance(budget, (int, float)):
+            raise ValueError("timeout must be a positive number")
+        if budget <= 0:
+            raise ValueError("timeout must be a positive number")
+        deadline = time.monotonic() + budget
         streaming_id = self._streaming_channel_id(channel_id, stream)
         path = f"/ISAPI/Streaming/channels/{streaming_id}/picture"
-        response = self._request("GET", path, timeout=timeout)
-        image = bytes(response.content)
+        response = self._request("GET", path, timeout=budget, stream=True)
+        image = bytearray()
+        try:
+            if time.monotonic() >= deadline:
+                raise HikUnreachableError("native snapshot timed out")
+            for chunk in response.iter_content(chunk_size=_SNAPSHOT_CHUNK_BYTES):
+                if not chunk:
+                    continue
+                if len(image) + len(chunk) > _MAX_SNAPSHOT_BYTES:
+                    raise HikError("native snapshot exceeded maximum image size")
+                image.extend(chunk)
+                if time.monotonic() >= deadline:
+                    raise HikUnreachableError("native snapshot timed out")
+        finally:
+            response.close()
+        image = bytes(image)
         if not image.startswith(b"\xff\xd8"):
             raise HikError(
                 f"snapshot channel {streaming_id} returned no JPEG image",
