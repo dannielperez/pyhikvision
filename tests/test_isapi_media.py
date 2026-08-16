@@ -48,17 +48,67 @@ def test_snapshot_fetches_native_jpeg_from_exact_channel(monkeypatch):
     calls = []
     image = b"\xff\xd8jpeg\xff\xd9"
 
-    def fake_request(self, method, path, *, data=None, timeout=None, stream=False):
-        calls.append((method, path, data, timeout, stream))
+    def fake_request(
+        self,
+        method,
+        path,
+        *,
+        data=None,
+        timeout=None,
+        stream=False,
+        deadline=None,
+    ):
+        calls.append((method, path, data, timeout, stream, deadline))
         return _Response(image)
 
     monkeypatch.setattr(IsapiClient, "_request", fake_request)
     client = IsapiClient("10.40.31.250", "operator", "secret")
 
     assert client.snapshot(channel_id=16, stream="sub", timeout=4.5) == image
-    assert calls == [
-        ("GET", "/ISAPI/Streaming/channels/1602/picture", None, 4.5, True),
-    ]
+    assert len(calls) == 1
+    method, path, data, timeout, streamed, deadline = calls[0]
+    assert (method, path, data) == (
+        "GET",
+        "/ISAPI/Streaming/channels/1602/picture",
+        None,
+    )
+    assert timeout == pytest.approx(4.5 / 8)
+    assert streamed is True
+    assert deadline is not None
+
+
+def test_request_basic_fallback_uses_remaining_aggregate_deadline(monkeypatch):
+    class AuthResponse:
+        def __init__(self, status_code):
+            self.status_code = status_code
+            self.text = ""
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    responses = [AuthResponse(401), AuthResponse(200)]
+    timeouts = []
+
+    def request(*args, **kwargs):
+        timeouts.append(kwargs["timeout"])
+        return responses.pop(0)
+
+    clock = iter([10.0, 10.8])
+    monkeypatch.setattr(time, "monotonic", lambda: next(clock))
+    client = IsapiClient("10.40.31.250", "operator", "secret")
+    monkeypatch.setattr(client._session, "request", request)  # noqa: SLF001
+
+    client._request(  # noqa: SLF001
+        "GET",
+        "/ISAPI/Streaming/channels/601/picture",
+        timeout=1.0,
+        deadline=11.0,
+        stream=True,
+    )
+
+    assert timeouts[0] == 1.0
+    assert timeouts[1] == pytest.approx(0.2)
 
 
 def test_snapshot_refuses_an_empty_response(monkeypatch):
