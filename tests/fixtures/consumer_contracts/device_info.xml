@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<DeviceInfo version="2.0" xmlns="http://www.hikvision.com/ver20/XMLSchema">
+<deviceName>Entrance NVR</deviceName>
+<deviceID>a1b2c3d4-0000-1111-2222-333344445555</deviceID>
+<model>DS-7616NI-K2</model>
+<serialNumber>DS-7616NI-K20220101AAWRD00000000</serialNumber>
+<macAddress>ac:cf:85:00:11:22</macAddress>
+<firmwareVersion>V4.61.106</firmwareVersion>
+<firmwareReleasedDate>build 220914</firmwareReleasedDate>
+<deviceType>NVR</deviceType>
+</DeviceInfo>
