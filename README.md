@@ -82,3 +82,22 @@ HCNetSDK Linux bundle into `binaries/linux/{x86_64,arm64}/` (or set
   NetSDK inside a Linux Docker container.
 - **SADP multicast doesn't traverse WireGuard.** ISAPI is the only path for
   remote-site IP migrations.
+
+### Partial IPv4 configuration updates
+
+`set_network_config` preserves fields omitted by the caller. To enable DHCP
+without overwriting stored static settings:
+
+```python
+with HikClient(host, user, password, timeout=10) as client:
+    client.set_network_config(dhcp=True)
+```
+
+For static addressing, pass `ip`, `mask`, `gateway` and `dhcp=False`; `dns1` and
+`dns2` are optional. A DNS-only update is also supported. Inputs are IPv4; the
+interface's original XML namespace and unrecognized elements are preserved.
+A write must return a successful ISAPI `ResponseStatus` (code 1). A lost or
+malformed response is ambiguous: rediscover by immutable device identity and
+read `get_network_config()` at the resulting address before deciding on recovery.
+Do not automatically repeat an IP-changing write. DHCP reservations belong on
+the DHCP server, not in this endpoint configuration API.

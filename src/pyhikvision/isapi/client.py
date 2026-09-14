@@ -22,6 +22,7 @@ Reference: Hikvision ISAPI 2.x specification (publicly distributed under
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import subprocess
 import time
@@ -246,11 +247,9 @@ class IsapiClient:
             raise HikXMLError(f"ipAddress not XML: {exc}") from exc
         dhcp_text = find_local_text(root, "addressingType") or ""
         return NetworkConfig(
-            ip=find_local_text(root, "ipAddress"),
-            mask=find_local_text(root, "subnetMask"),
-            gateway=find_local_text(root, "DefaultGateway")
-            or find_local_text(root, "ipAddress.1")
-            or _find_gateway(root),
+            ip=_direct_text(root, "ipAddress"),
+            mask=_direct_text(root, "subnetMask"),
+            gateway=_find_gateway(root),
             dns1=_find_dns(root, 1),
             dns2=_find_dns(root, 2),
             dhcp=(dhcp_text.lower() == "dynamic") if dhcp_text else None,
@@ -261,15 +260,33 @@ class IsapiClient:
     def set_network_config(
         self,
         *,
-        ip: str,
-        mask: str,
-        gateway: str,
+        ip: Optional[str] = None,
+        mask: Optional[str] = None,
+        gateway: Optional[str] = None,
         dns1: Optional[str] = None,
         dns2: Optional[str] = None,
         dhcp: Optional[bool] = None,
     ) -> None:
-        """PUT a new ipAddress block. Roundtrips current XML to preserve
-        firmware-specific elements we don't recognise."""
+        """Patch IPv4 settings, preserving omitted fields and vendor extensions.
+
+        ``dhcp=True`` alone enables DHCP without inventing static defaults.
+        A lost PUT response is ambiguous: callers must rediscover the device,
+        never automatically replay the write.
+        """
+        for name, value in (
+            ("ip", ip),
+            ("gateway", gateway),
+            ("dns1", dns1),
+            ("dns2", dns2),
+        ):
+            if value is not None:
+                ipaddress.IPv4Address(value)
+        if mask is not None:
+            ipaddress.IPv4Network(f"0.0.0.0/{mask}")
+        if dhcp is not None and not isinstance(dhcp, bool):
+            raise ValueError("dhcp must be a boolean")
+        if all(value is None for value in (ip, mask, gateway, dns1, dns2, dhcp)):
+            raise ValueError("At least one network setting is required")
         path = f"/ISAPI/System/Network/interfaces/{self.interface_id}/ipAddress"
         cur = self._request("GET", path)
         try:
@@ -277,22 +294,38 @@ class IsapiClient:
         except Exception as exc:
             raise HikXMLError(f"ipAddress (pre-PUT) not XML: {exc}") from exc
 
-        # Set core fields
-        if not set_local_text(root, "ipAddress", ip):
-            raise HikXMLError("ipAddress element missing in response")
-        if not set_local_text(root, "subnetMask", mask):
-            raise HikXMLError("subnetMask element missing in response")
+        if localname(root.tag) != "IPAddress":
+            raise HikXMLError("Expected an IPAddress configuration response")
+        # Match only direct children: gateway/DNS can precede the local IP.
+        for name, value in (("ipAddress", ip), ("subnetMask", mask)):
+            if value is not None:
+                _require_direct_text(root, name, value)
         # Gateway lives under <DefaultGateway><ipAddress>...</ipAddress></DefaultGateway>
-        _set_gateway(root, gateway)
+        if gateway is not None:
+            _set_gateway(root, gateway)
         if dns1 is not None:
             _set_dns(root, 1, dns1)
         if dns2 is not None:
             _set_dns(root, 2, dns2)
         if dhcp is not None:
-            set_local_text(root, "addressingType", "dynamic" if dhcp else "static")
+            _require_direct_text(
+                root, "addressingType", "dynamic" if dhcp else "static"
+            )
 
+        # to_xml strips ElementTree's ns0 prefix; retain the original namespace.
+        if root.tag.startswith("{"):
+            root.set("xmlns", root.tag[1:].split("}", 1)[0])
         body = to_xml(root)
-        self._request("PUT", path, data=body)
+        response = self._request("PUT", path, data=body)
+        try:
+            status = parse(response.text)
+        except Exception as exc:
+            raise HikXMLError("Network write returned no valid ResponseStatus") from exc
+        if (
+            localname(status.tag) != "ResponseStatus"
+            or _direct_text(status, "statusCode") != "1"
+        ):
+            raise HikXMLError("Network write was not acknowledged as successful")
 
     # ---- smart events ----
     def get_line_detection(
@@ -1052,7 +1085,7 @@ def _set_direct_text(elem: ET.Element, value: str) -> None:
 def _require_direct_text(elem: ET.Element, name: str, value: str) -> None:
     child = _direct_child(elem, name)
     if child is None:
-        raise HikXMLError(f"LineDetection element missing: {name}")
+        raise HikXMLError(f"{localname(elem.tag)} element missing: {name}")
     child.text = value
 
 
